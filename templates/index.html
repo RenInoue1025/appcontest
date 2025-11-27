@@ -1,0 +1,127 @@
+{% extends "base.html" %}
+{% block title %}机の清潔度チェック{% endblock %}
+{% block content %}
+
+<div class="container">
+  <h1>ワンデスクリーン</h1>
+
+  <!-- アップロードフォーム -->
+  <form id="uploadForm" action="{{ url_for('predict') }}" method="POST" enctype="multipart/form-data" class="upload-form">
+
+    <!-- 非表示のファイル選択 -->
+    <input type="file" id="fileInput" name="file" accept="image/*" style="display:none;">
+
+    <!-- メインボタン -->
+    <div class="button-area">
+      <button type="button" class="upload-btn" onclick="openFile()">📁 ファイルから選ぶ</button>
+      <button type="button" class="upload-btn" onclick="openCamera()">📷 カメラを起動</button>
+    </div>
+
+    <!-- カメラ画面 -->
+    <div id="cameraSection" style="display:none; margin-top:15px;">
+      <video id="cameraPreview" autoplay playsinline style="width:100%; max-width:300px; border-radius:8px;"></video>
+      <button type="button" id="captureBtn" class="upload-btn" style="margin-top:10px;">📸 撮影する</button>
+      <canvas id="cameraCanvas" style="display:none;"></canvas>
+    </div>
+
+  </form>
+
+  {% if uploaded_image %}
+    <div class="result-section">
+      <h2>アップロード画像：</h2>
+      <img src="{{ uploaded_image }}" alt="アップロード画像" class="preview-img">
+    </div>
+  {% endif %}
+
+  {% if result %}
+    <div class="ai-result">
+      <h3>結果：{{ result|safe }}</h3>
+    </div>
+  {% endif %}
+</div>
+
+
+<!-- ▼ 下部ナビ -->
+<div class="bottom-nav">
+  <button class="nav-btn left-btn" id="menu-btn">📅</button>
+  <button class="nav-btn center-btn" onclick="openCamera()">📷</button>
+  <button class="nav-btn right-btn">💬</button>
+</div>
+
+
+<!-- ▼ オーバーレイメニュー -->
+<div id="menu-overlay" class="menu-overlay">
+  <div class="menu-box">
+    <button class="menu-close-btn" id="menu-close">✖</button>
+    <h2>メニュー</h2>
+    <button class="menu-item" onclick="location.href='{{ url_for('calendar') }}'">📅 カレンダー</button>
+    <button class="menu-item" onclick="location.href='{{ url_for('index') }}'">📷 撮影</button>
+    <button class="menu-item" onclick="location.href='{{ url_for('rewards') }}'">🏆 実績</button>
+    <button class="menu-item" onclick="location.href='{{ url_for('settings') }}'">👤 アカウント</button>
+  </div>
+</div>
+
+<script>
+/* フォーム */
+const form = document.getElementById("uploadForm");
+const fileInput = document.getElementById("fileInput");
+
+/* =============== 1. ファイル選択 =============== */
+function openFile() {
+  fileInput.click();
+}
+
+/* ファイル選択 → 自動送信 */
+fileInput.addEventListener("change", () => {
+  if (fileInput.files.length > 0) {
+    form.submit();
+  }
+});
+
+/* =============== 2. カメラ起動 =============== */
+function openCamera() {
+  const cameraSection = document.getElementById("cameraSection");
+  cameraSection.style.display = "block";
+
+  navigator.mediaDevices.getUserMedia({ video: true })
+    .then(stream => {
+      const video = document.getElementById("cameraPreview");
+      video.srcObject = stream;
+    })
+    .catch(err => {
+      alert("カメラへアクセスできません: " + err);
+    });
+}
+
+/* =============== 3. 撮影 =============== */
+document.getElementById("captureBtn").addEventListener("click", () => {
+  const video = document.getElementById("cameraPreview");
+  const canvas = document.getElementById("cameraCanvas");
+  const ctx = canvas.getContext("2d");
+
+  canvas.width = video.videoWidth;
+  canvas.height = video.videoHeight;
+
+  ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+  canvas.toBlob(blob => {
+    const file = new File([blob], "camera_shot.jpg", { type: "image/jpeg" });
+    const dataTransfer = new DataTransfer();
+    dataTransfer.items.add(file);
+    fileInput.files = dataTransfer.files;
+
+    form.submit();  // ← 撮影後に即送信
+  });
+});
+
+/* =============== 4. メニュー制御 =============== */
+document.getElementById("menu-btn").addEventListener("click", () => {
+  document.getElementById("menu-overlay").style.display = "flex";
+});
+
+document.getElementById("menu-close").addEventListener("click", () => {
+  document.getElementById("menu-overlay").style.display = "none";
+});
+</script>
+
+{% endblock %}

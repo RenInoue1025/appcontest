@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <title>{% block title %}ワンデスクリーンAI{% endblock %}</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+  <header>
+    <nav class="navbar">
+      <a href="{{ url_for('index') }}">🏠 ホーム</a>
+      <a href="{{ url_for('history') }}">📸 履歴</a>
+      <a href="{{ url_for('calendar') }}">🗓 カレンダー</a>
+      <a href="{{ url_for('rewards') }}">🎖 報酬</a>
+      <a href="{{ url_for('settings') }}">⚙️ 設定</a>
+    </nav>
+  </header>
+
+  <main>
+    {% block content %}{% endblock %}
+  </main>
+
+  <script src="{{ url_for('static', filename='js/main.js') }}"></script>
+</body>
+</html>

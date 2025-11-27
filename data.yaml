@@ -1,0 +1,15 @@
+# ============================
+# YOLO desk classifier dataset
+# ============================
+
+path: ./dataset      # dataset フォルダ（あなたが作る）
+
+train: 
+  - images/train
+val:
+  - images/val
+
+# 分類するクラス（机 or 机ではない）
+names:
+  0: desk
+  1: not_desk
