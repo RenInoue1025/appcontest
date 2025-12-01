@@ -1,6 +1,14 @@
 flask==3.0.0
 numpy==1.26.4
 pillow==10.2.0
-ultralytics==8.2.0
 opencv-python-headless==4.9.0.80
 gunicorn==21.2.0
+
+# PyTorch CPU 版（PythonAnywhere推奨）
+torch==2.2.0+cpu
+torchvision==0.17.0+cpu
+torchaudio==2.2.0+cpu
+--find-links https://download.pytorch.org/whl/torch_stable.html
+
+# ultralytics（最後に入れることで依存が衝突しない）
+ultralytics==8.2.0
