@@ -15,22 +15,19 @@ app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
 # =====================================
 # モデル（あなたの学習済みモデルパスに合わせて）
 # =====================================
-messy_model = YOLO("runs/detect/desk_paper_book/weights/best.pt")
-desk_model = YOLO("combined_dataset/runs/detect/train/weights/best.pt")
+messy_model = YOLO("best.pt")
+desk_model = YOLO("best.pt")
 
 # --------------------------------------------
-# パラメータ（調整しやすいようここに集約）
+# パラメータ
 # --------------------------------------------
-CONF_THRESHOLD = 0.30       # 検出の最低信頼度（高めにすると誤検出減る）
-MIN_BOX_AREA = 0.001        # 無視する極小BBox（画像比率で、0.001=0.1%）
-PAPER_MIN_AREA = 0.002      # paper と認める最小面積（誤検出抑制）
-OVERLAP_SCALE = 0.6         # IoU による加点のスケーリング（0.0〜1.0）
-SCORE_TO_PERCENT = 3.0      # 内部スコア -> % にする係数（小さくすると厳しくない）
-DEBUG = False               # True にすると内部スコアを結果表示する
+CONF_THRESHOLD = 0.30
+MIN_BOX_AREA = 0.001
+PAPER_MIN_AREA = 0.002
+OVERLAP_SCALE = 0.6
+SCORE_TO_PERCENT = 3.0
+DEBUG = False
 
-# --------------------------------------------
-# 物体判定ルール
-# --------------------------------------------
 ALLOWED_CLASSES = {
     "keyboard", "mouse", "laptop", "remote", "cell phone",
     "book", "cup", "bottle", "chair", "tv", "monitor",
@@ -49,7 +46,7 @@ NORMAL_ITEMS_LIMITS = {
 
 GARBAGE_WEIGHTS = {
     "book": 2,
-    "paper": 1,        # ← 下げた（paperの誤検出による影響を抑制）
+    "paper": 1,
     "cell phone": 2,
     "remote": 2,
     "backpack": 2,
@@ -58,12 +55,11 @@ GARBAGE_WEIGHTS = {
     "apple": 2,
     "teddy bear": 2,
 }
-
 DEFAULT_WEIGHT = 1
 
 
 # ==========================================================
-# IoU（重なり度）を計算（手書き実装）
+# IoU
 # ==========================================================
 def iou_xyxy(box1, box2):
     x1 = max(box1[0], box2[0])
@@ -98,6 +94,35 @@ def calculate_overlap_score(boxes):
     return score
 
 
+# ==========================================================
+# ★ 画像縮小処理（追加）
+# ==========================================================
+def resize_image_if_needed(input_path, max_width=1280):
+    """
+    画像の横幅が max_width を超える場合に縮小した画像を保存し、
+    新しい一時ファイルのパスを返す。
+    モデル推論にはこの縮小画像を使用する。
+    """
+    img = Image.open(input_path).convert("RGB")
+    w, h = img.size
+
+    if w <= max_width:
+        return input_path  # 縮小不要
+
+    scale = max_width / w
+    new_size = (max_width, int(h * scale))
+
+    resized_img = img.resize(new_size, Image.LANCZOS)
+
+    temp_path = input_path.replace(".jpg", "_resized.jpg").replace(".png", "_resized.png")
+    resized_img.save(temp_path)
+
+    return temp_path
+
+
+# ==========================================================
+# ルーティング
+# ==========================================================
 @app.route("/")
 def index():
     return render_template("index.html")
@@ -110,18 +135,21 @@ def predict():
         if not file:
             return render_template("index.html", result="画像を受け取れませんでした。")
 
-        # 保存
+        # オリジナル保存
         filename = file.filename
         filepath = os.path.join(app.config["UPLOAD_FOLDER"], filename)
         file.save(filepath)
 
-        # 画像サイズ取得（正規化面積計算のため）
-        pil_img = Image.open(filepath).convert("RGB")
+        # ★ 画像縮小 → 推論用ファイルパス取得
+        resized_path = resize_image_if_needed(filepath)
+
+        # 画像サイズ取得
+        pil_img = Image.open(resized_path).convert("RGB")
         img_w, img_h = pil_img.size
         img_area = float(img_w * img_h)
 
-        # ---- (1) 机判定（専用モデル） ----
-        desk_results = desk_model(filepath, verbose=False)[0]
+        # ---- (1) 机判定 ----
+        desk_results = desk_model(resized_path, verbose=False)[0]
         desk_detected = False
         for box in desk_results.boxes:
             cls_id = int(box.cls)
@@ -131,55 +159,44 @@ def predict():
                 break
 
         if not desk_detected:
-            # ユーザー修正（あとでボタンで「これは机です」を追加する設計にできます）
             return render_template(
                 "index.html",
                 result="机が写っている画像ではありません。もう一度撮影してください。",
                 uploaded_image=url_for("static", filename=f"uploads/{filename}")
             )
 
-        # ---- (2) 散らかり判定（messy_model） ----
-        detection = messy_model(filepath, verbose=False)[0]
+        # ---- (2) 散らかり判定 ----
+        detection = messy_model(resized_path, verbose=False)[0]
 
-        # 集計用
         object_count = {}
-        boxes_norm = []   # 正規化された xyxy (0..1)
-        boxes_abs = []    # 絶対座標（ピクセル）
+        boxes_abs = []
         paper_centers = []
         paper_count = 0
 
         for box in detection.boxes:
-            # confidence を扱えるように安全に取得
             try:
                 conf = float(box.conf[0])
             except Exception:
-                # 互換性のため別の取り方
-                conf = float(getattr(box, "conf", 0.0) if hasattr(box, "conf") else 0.0)
+                conf = 0.0
 
-            # スコアが低ければ無視
             if conf < CONF_THRESHOLD:
                 continue
 
-            # bbox 座標
-            xyxy = box.xyxy[0].cpu().numpy()  # [x1,y1,x2,y2] (pixels)
+            xyxy = box.xyxy[0].cpu().numpy()
             x1, y1, x2, y2 = map(float, xyxy)
-            w = max(0.0, x2 - x1)
-            h = max(0.0, y2 - y1)
-            area = (w * h) / max(1.0, img_area)  # 正規化面積 (0..1)
+            w = max(0, x2 - x1)
+            h = max(0, y2 - y1)
+            area = (w * h) / img_area
 
-            # 小さすぎる箱はノイズとみなす
             if area < MIN_BOX_AREA:
                 continue
 
             obj_name = messy_model.names[int(box.cls)]
 
-            # paper は面積が小さければ無視（誤検出抑制）
             if obj_name == "paper" and area < PAPER_MIN_AREA:
                 continue
 
-            # 集計
             object_count[obj_name] = object_count.get(obj_name, 0) + 1
-            boxes_norm.append([x1 / img_w, y1 / img_h, x2 / img_w, y2 / img_h])
             boxes_abs.append([x1, y1, x2, y2])
 
             if obj_name == "paper":
@@ -192,15 +209,13 @@ def predict():
         messiness_score = 0.0
         display_objects = {}
 
-        # 基本の件数重み
         for obj, count in object_count.items():
             if obj in NORMAL_ITEMS_LIMITS:
                 limit = NORMAL_ITEMS_LIMITS[obj]
                 if count > limit:
                     excess = count - limit
-                    messiness_score += excess * 1.0
+                    messiness_score += excess
                     display_objects[obj] = excess
-                # 常設アイテムはここまで
                 continue
 
             if obj in GARBAGE_WEIGHTS:
@@ -212,11 +227,9 @@ def predict():
                 messiness_score += DEFAULT_WEIGHT * count
                 display_objects[obj] = count
 
-        # 重なり（IoU）スコア（boxes_abs を使用）
-        overlap_score = calculate_overlap_score(boxes_abs)
-        messiness_score += overlap_score
+        messiness_score += calculate_overlap_score(boxes_abs)
 
-        # 紙の散らばり（paper_centers の範囲）→加点
+        # 紙散らばり
         spread_score = 0
         if len(paper_centers) >= 3:
             xs = [c[0] for c in paper_centers]
@@ -230,7 +243,7 @@ def predict():
                 spread_score = 4
         messiness_score += spread_score
 
-        # 紙の枚数ペナルティ（指数的）
+        # 紙の枚数
         if paper_count > 0:
             if paper_count <= 3:
                 messiness_score += paper_count * 0.8
@@ -243,10 +256,9 @@ def predict():
             else:
                 messiness_score += paper_count * 2.5
 
-        # 正規化（内部スコア->%）
         messiness_percent = min(100.0, messiness_score * SCORE_TO_PERCENT)
 
-        # メッセージ組み立て
+        # メッセージ生成
         message = f"あなたの机は <b>{messiness_percent:.1f}%</b> 散らかっています。<br>"
         if messiness_percent > 70:
             message += "かなり散らかっています。片付けましょう🧹<br>"
@@ -260,9 +272,6 @@ def predict():
             message += f"散らかり要因：{detected_list}<br>"
         else:
             message += "散らかり要因となる物体は検出されませんでした。<br>"
-
-        if DEBUG:
-            message += f"(デバッグ) conf_th={CONF_THRESHOLD}, min_area={MIN_BOX_AREA}, paper_count={paper_count}, overlap={overlap_score:.2f}, spread={spread_score}, raw_score={messiness_score:.2f})"
 
         return render_template(
             "index.html",
