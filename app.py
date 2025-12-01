@@ -3,7 +3,7 @@ import numpy as np
 import itertools
 from flask import Flask, render_template, request, url_for
 from PIL import Image
-from ultralytics import YOLO  # YOLOv8
+from ultralytics import YOLO
 
 app = Flask(__name__)
 app.secret_key = "dummy_secret_key"
@@ -12,15 +12,16 @@ UPLOAD_FOLDER = "static/uploads"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
 
-# =====================================
-# モデル（あなたの学習済みモデルパスに合わせて）
-# =====================================
-messy_model = YOLO("best.pt")
-desk_model = YOLO("best.pt")
+# ================================
+# YOLO モデル読み込み
+# ================================
+MODEL_PATH = "best.pt"
+messy_model = YOLO(MODEL_PATH)
+desk_model = YOLO(MODEL_PATH)
 
-# --------------------------------------------
-# パラメータ
-# --------------------------------------------
+# ================================
+# パラメータ（調整しやすいよう集約）
+# ================================
 CONF_THRESHOLD = 0.30
 MIN_BOX_AREA = 0.001
 PAPER_MIN_AREA = 0.002
@@ -55,30 +56,28 @@ GARBAGE_WEIGHTS = {
     "apple": 2,
     "teddy bear": 2,
 }
+
 DEFAULT_WEIGHT = 1
 
 
-# ==========================================================
-# IoU
-# ==========================================================
+# ================================
+# IoU計算（重なり度）
+# ================================
 def iou_xyxy(box1, box2):
     x1 = max(box1[0], box2[0])
     y1 = max(box1[1], box2[1])
     x2 = min(box1[2], box2[2])
     y2 = min(box1[3], box2[3])
 
-    inter_area = max(0, x2 - x1) * max(0, y2 - y1)
-    if inter_area <= 0:
+    inter = max(0, x2 - x1) * max(0, y2 - y1)
+    if inter <= 0:
         return 0.0
 
-    area1 = max(0.0, (box1[2] - box1[0]) * (box1[3] - box1[1]))
-    area2 = max(0.0, (box2[2] - box2[0]) * (box2[3] - box2[1]))
+    area1 = (box1[2] - box1[0]) * (box1[3] - box1[1])
+    area2 = (box2[2] - box2[0]) * (box2[3] - box2[1])
+    union = area1 + area2 - inter
 
-    union_area = area1 + area2 - inter_area
-    if union_area <= 0:
-        return 0.0
-
-    return inter_area / union_area
+    return inter / union if union > 0 else 0.0
 
 
 def calculate_overlap_score(boxes):
@@ -94,35 +93,9 @@ def calculate_overlap_score(boxes):
     return score
 
 
-# ==========================================================
-# ★ 画像縮小処理（追加）
-# ==========================================================
-def resize_image_if_needed(input_path, max_width=1280):
-    """
-    画像の横幅が max_width を超える場合に縮小した画像を保存し、
-    新しい一時ファイルのパスを返す。
-    モデル推論にはこの縮小画像を使用する。
-    """
-    img = Image.open(input_path).convert("RGB")
-    w, h = img.size
-
-    if w <= max_width:
-        return input_path  # 縮小不要
-
-    scale = max_width / w
-    new_size = (max_width, int(h * scale))
-
-    resized_img = img.resize(new_size, Image.LANCZOS)
-
-    temp_path = input_path.replace(".jpg", "_resized.jpg").replace(".png", "_resized.png")
-    resized_img.save(temp_path)
-
-    return temp_path
-
-
-# ==========================================================
+# ================================
 # ルーティング
-# ==========================================================
+# ================================
 @app.route("/")
 def index():
     return render_template("index.html")
@@ -135,38 +108,45 @@ def predict():
         if not file:
             return render_template("index.html", result="画像を受け取れませんでした。")
 
-        # オリジナル保存
         filename = file.filename
         filepath = os.path.join(app.config["UPLOAD_FOLDER"], filename)
         file.save(filepath)
 
-        # ★ 画像縮小 → 推論用ファイルパス取得
-        resized_path = resize_image_if_needed(filepath)
+        # ================================
+        # 🔥 Render対策：画像縮小（超重要）
+        # ================================
+        pil_img = Image.open(filepath).convert("RGB")
+        MAX_SIZE = 1280
+        pil_img.thumbnail((MAX_SIZE, MAX_SIZE))
+        pil_img.save(filepath)
 
-        # 画像サイズ取得
-        pil_img = Image.open(resized_path).convert("RGB")
         img_w, img_h = pil_img.size
         img_area = float(img_w * img_h)
 
-        # ---- (1) 机判定 ----
-        desk_results = desk_model(resized_path, verbose=False)[0]
+        # ================================
+        # (1) 机判定（desk_model）
+        # ================================
+        desk_results = desk_model(filepath, verbose=False)[0]
         desk_detected = False
+
         for box in desk_results.boxes:
             cls_id = int(box.cls)
-            label = desk_model.names[cls_id]
-            if label.lower() in ["desk", "table"]:
+            label = desk_model.names[cls_id].lower()
+            if label in ["desk", "table"]:
                 desk_detected = True
                 break
 
         if not desk_detected:
             return render_template(
                 "index.html",
-                result="机が写っている画像ではありません。もう一度撮影してください。",
+                result="机が写っていません。『これは机です』ボタンで上書き可能にできます。",
                 uploaded_image=url_for("static", filename=f"uploads/{filename}")
             )
 
-        # ---- (2) 散らかり判定 ----
-        detection = messy_model(resized_path, verbose=False)[0]
+        # ================================
+        # (2) 散らかり判定（messy_model）
+        # ================================
+        detection = messy_model(filepath, verbose=False)[0]
 
         object_count = {}
         boxes_abs = []
@@ -176,36 +156,34 @@ def predict():
         for box in detection.boxes:
             try:
                 conf = float(box.conf[0])
-            except Exception:
-                conf = 0.0
+            except:
+                conf = float(getattr(box, "conf", 0.0))
 
             if conf < CONF_THRESHOLD:
                 continue
 
             xyxy = box.xyxy[0].cpu().numpy()
             x1, y1, x2, y2 = map(float, xyxy)
-            w = max(0, x2 - x1)
-            h = max(0, y2 - y1)
-            area = (w * h) / img_area
+            area = ((x2 - x1) * (y2 - y1)) / img_area
 
             if area < MIN_BOX_AREA:
                 continue
 
-            obj_name = messy_model.names[int(box.cls)]
+            name = messy_model.names[int(box.cls)]
 
-            if obj_name == "paper" and area < PAPER_MIN_AREA:
+            if name == "paper" and area < PAPER_MIN_AREA:
                 continue
 
-            object_count[obj_name] = object_count.get(obj_name, 0) + 1
+            object_count[name] = object_count.get(name, 0) + 1
             boxes_abs.append([x1, y1, x2, y2])
 
-            if obj_name == "paper":
-                cx = (x1 + x2) / 2.0 / img_w
-                cy = (y1 + y2) / 2.0 / img_h
-                paper_centers.append((cx, cy))
+            if name == "paper":
+                paper_centers.append(((x1 + x2) / 2 / img_w, (y1 + y2) / 2 / img_h))
                 paper_count += 1
 
-        # ---- (3) スコア計算 ----
+        # ================================
+        # スコア計算
+        # ================================
         messiness_score = 0.0
         display_objects = {}
 
@@ -213,9 +191,8 @@ def predict():
             if obj in NORMAL_ITEMS_LIMITS:
                 limit = NORMAL_ITEMS_LIMITS[obj]
                 if count > limit:
-                    excess = count - limit
-                    messiness_score += excess
-                    display_objects[obj] = excess
+                    messiness_score += (count - limit)
+                    display_objects[obj] = count - limit
                 continue
 
             if obj in GARBAGE_WEIGHTS:
@@ -229,21 +206,15 @@ def predict():
 
         messiness_score += calculate_overlap_score(boxes_abs)
 
-        # 紙散らばり
-        spread_score = 0
         if len(paper_centers) >= 3:
             xs = [c[0] for c in paper_centers]
             ys = [c[1] for c in paper_centers]
-            spread_x = max(xs) - min(xs)
-            spread_y = max(ys) - min(ys)
-            spread_area = spread_x * spread_y
-            if spread_area > 0.25:
-                spread_score = 8
-            elif spread_area > 0.12:
-                spread_score = 4
-        messiness_score += spread_score
+            spread = (max(xs) - min(xs)) * (max(ys) - min(ys))
+            if spread > 0.25:
+                messiness_score += 8
+            elif spread > 0.12:
+                messiness_score += 4
 
-        # 紙の枚数
         if paper_count > 0:
             if paper_count <= 3:
                 messiness_score += paper_count * 0.8
@@ -256,9 +227,8 @@ def predict():
             else:
                 messiness_score += paper_count * 2.5
 
-        messiness_percent = min(100.0, messiness_score * SCORE_TO_PERCENT)
+        messiness_percent = min(100, messiness_score * SCORE_TO_PERCENT)
 
-        # メッセージ生成
         message = f"あなたの机は <b>{messiness_percent:.1f}%</b> 散らかっています。<br>"
         if messiness_percent > 70:
             message += "かなり散らかっています。片付けましょう🧹<br>"
@@ -268,10 +238,9 @@ def predict():
             message += "とても綺麗です✨<br>"
 
         if display_objects:
-            detected_list = ", ".join([f"{o} × {c}" for o, c in display_objects.items()])
-            message += f"散らかり要因：{detected_list}<br>"
+            message += "散らかり要因：" + ", ".join([f"{o} × {c}" for o, c in display_objects.items()])
         else:
-            message += "散らかり要因となる物体は検出されませんでした。<br>"
+            message += "散らかり要因となる物体は検出されませんでした。"
 
         return render_template(
             "index.html",
@@ -280,7 +249,7 @@ def predict():
         )
 
     except Exception as e:
-        print(f"❌ エラー: {e}")
+        print("❌ エラー:", e)
         return render_template("index.html", result=f"エラーが発生しました: {e}")
 
 
