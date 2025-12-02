@@ -4,11 +4,10 @@ pillow==10.2.0
 opencv-python-headless==4.9.0.80
 gunicorn==21.2.0
 
-# PyTorch CPU 版（PythonAnywhere推奨）
-torch==2.2.0+cpu
-torchvision==0.17.0+cpu
-torchaudio==2.2.0+cpu
---find-links https://download.pytorch.org/whl/torch_stable.html
+# PyTorch（CPU版） - 通常のPyPIからOK、+cpu は不要
+torch==2.2.0
+torchvision==0.17.0
+torchaudio==2.2.0
 
-# ultralytics（最後に入れることで依存が衝突しない）
+# ultralytics（依存衝突回避）
 ultralytics==8.2.0
